@@ -1,0 +1,190 @@
+name: rcm
+
+services:
+  # ==========================================
+  # 1. CORE INFRASTRUCTURE
+  # ==========================================
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: rcm-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8.6-alpine
+    container_name: rcm-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ==========================================
+  # 2. MICROSERVICES (Development Mode)
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev   # 👈 Uses hot-reload image
+    container_name: rcm-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?schema=public
+      - REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379
+      - ML_SERVICE_URL=http://ml-service:8000
+      - JWT_SECRET=${JWT_SECRET}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ./backend/src
+          target: /app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: ./backend/package.json
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile.dev   # 👈 Uses --reload flag
+    container_name: rcm-ml-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      - REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - MODEL_PATH=/app/models/xgboost_denial_model.pkl
+    volumes:
+      - ./ml-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: sync
+          path: ./ml-service/app
+          target: /app/app
+          ignore:
+            - __pycache__/
+        - action: rebuild
+          path: ./ml-service/requirements.txt
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.dev
+    container_name: rcm-worker
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?schema=public
+      - REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379
+      - ML_SERVICE_URL=http://ml-service:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./worker:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_started
+    develop:
+      watch:
+        - action: sync
+          path: ./worker/src
+          target: /app/src
+
+  # ==========================================
+  # 3. FRONTEND UI (with Turbopack)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: rcm-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:3000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    develop:
+      watch:
+        - action: sync
+          path: ./frontend/app
+          target: /app/app
+        - action: sync
+          path: ./frontend/components
+          target: /app/components
+
+  # ==========================================
+  # 4. ADMIN TOOLS
+  # ==========================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: rcm-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@rcm.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-adminpassword}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: rcm-redisinsight
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
