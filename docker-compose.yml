@@ -18,7 +18,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -33,7 +33,7 @@ services:
       - redis_data:/data
     command: redis-server --save 60 1 --loglevel warning --requirepass ${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -44,7 +44,7 @@ services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile.dev   # 👈 Uses hot-reload image
+      dockerfile: Dockerfile.dev # 👈 Uses hot-reload image
     container_name: rcm-backend
     restart: unless-stopped
     ports:
@@ -61,8 +61,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+        #redis:
+        #condition: service_healthy
     develop:
       watch:
         - action: sync
@@ -76,7 +76,7 @@ services:
   ml-service:
     build:
       context: ./ml-service
-      dockerfile: Dockerfile.dev   # 👈 Uses --reload flag
+      dockerfile: Dockerfile.dev # 👈 Uses --reload flag
     container_name: rcm-ml-service
     restart: unless-stopped
     ports:
